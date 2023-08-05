@@ -196,7 +196,7 @@ check_plugins() {
   else
     log -e "\nNo non-official plugins detected."
   fi
-  log -e "\nSee https://github.com/discourse/discourse/blob/master/lib/plugin/metadata.rb for the official list.\n"
+  log -e "\nSee https://github.com/discourse/discourse/blob/main/lib/plugin/metadata.rb for the official list.\n"
 }
 
 dump_yaml() {
@@ -327,7 +327,7 @@ print_done() {
         log "Publicly available log not generated."
     fi
   fi
-  # The following is not in the web log file since it was copied above, which seems corect
+  # The following is not in the web log file since it was copied above, which seems correct
   log
   log "You can examine the output of this script with "
   log "LESS=-Ri less $LOG_FILE"

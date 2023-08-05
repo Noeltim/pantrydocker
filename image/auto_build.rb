@@ -4,17 +4,17 @@ require 'pty'
 require 'optparse'
 
 images = {
-  base: { name: 'base', tag: "discourse/base:build", squash: true },
+  base_slim: { name: 'base', tag: "discourse/base:build_slim", squash: true, extra_args: '-f slim.Dockerfile' },
+  base: { name: 'base', tag: "discourse/base:build", extra_args: '-f release.Dockerfile' },
   discourse_test_build: { name: 'discourse_test', tag: "discourse/discourse_test:build", squash: false},
-  discourse_test_public: { name: 'discourse_test', tag: "discourse/discourse_test:release", squash: true, extra_args: ' --build-arg tag=release '},
   discourse_dev: { name: 'discourse_dev', tag: "discourse/discourse_dev:build", squash: false },
 }
 
 def run(command)
   lines = []
-  PTY.spawn(command) do |stdin, stdout, pid|
+  PTY.spawn(command) do |stdout, stdin, pid|
     begin
-      stdin.each do |line|
+      stdout.each do |line|
         lines << line
         puts line
       end
@@ -39,10 +39,25 @@ def dev_deps()
   run("cp ../templates/redis.template.yml discourse_dev/redis.template.yml")
 end
 
-image = ARGV[0].intern
-raise 'Image not found' unless images.include?(image)
+if ARGV.length != 1
+  puts <<~TEXT
+    Usage:
+    ruby auto_build.rb IMAGE
 
-puts "Building #{images[image]}"
-dev_deps() if image == :discourse_dev
+    Available images:
+    #{images.keys.join(", ")}
+  TEXT
+  exit 1
+else
+  image = ARGV[0].to_sym
 
-build(images[image])
+  if !images.include?(image)
+    $stderr.puts "Image not found"
+    exit 1
+  end
+
+  puts "Building #{images[image]}"
+  dev_deps() if image == :discourse_dev
+
+  build(images[image])
+end

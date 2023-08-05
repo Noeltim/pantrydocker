@@ -1,0 +1,24 @@
+#!/bin/bash
+set -e
+
+# version check: https://github.com/shssoichiro/oxipng/releases
+OXIPNG_VERSION="8.0.0"
+OXIPNG_HASH="ef96d6340e70900de0a38ace8f5f20878f6c256b18b0c59cd87f2b515437b87b"
+OXIPNG_ARCHIVE="v${OXIPNG_VERSION}.tar.gz"
+OXIPNG_DIR="oxipng-${OXIPNG_VERSION}"
+
+# Install other deps
+apt-get -y install advancecomp jhead jpegoptim libjpeg-turbo-progs optipng
+
+cd /tmp
+wget -q https://github.com/shssoichiro/oxipng/archive/refs/tags/${OXIPNG_ARCHIVE}
+sha256sum ${OXIPNG_ARCHIVE}
+echo "${OXIPNG_HASH} ${OXIPNG_ARCHIVE}" | sha256sum -c
+
+tar -zxf ${OXIPNG_ARCHIVE}
+cd ${OXIPNG_DIR}
+
+CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse /usr/local/cargo/bin/cargo build --release
+cp target/release/oxipng /usr/local/bin
+
+cd / && rm -fr /tmp/${OXIPNG_DIR}
