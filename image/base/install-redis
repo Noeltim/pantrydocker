@@ -2,12 +2,12 @@
 set -e
 
 # version check: https://redis.io/
-REDIS_VERSION=6.2.3
-REDIS_HASH="98ed7d532b5e9671f5df0825bb71f0f37483a16546364049384c63db8764512b"
+REDIS_VERSION=6.2.6
+REDIS_HASH="5b2b8b7a50111ef395bf1c1d5be11e6e167ac018125055daa8b5c2317ae131ab"
 
 cd /tmp
 # Prepare Redis source.
-wget http://download.redis.io/releases/redis-$REDIS_VERSION.tar.gz
+wget -q http://download.redis.io/releases/redis-$REDIS_VERSION.tar.gz
 sha256sum redis-$REDIS_VERSION.tar.gz
 echo "$REDIS_HASH redis-$REDIS_VERSION.tar.gz" | sha256sum -c
 
@@ -15,7 +15,7 @@ tar zxf redis-$REDIS_VERSION.tar.gz
 cd redis-$REDIS_VERSION
 
 # Building and installing binaries.
-make && make install PREFIX=/usr
+make BUILD_TLS=yes && make install PREFIX=/usr
 
 # Add `redis` user and group.
 adduser --system --home /var/lib/redis --quiet --group redis || true

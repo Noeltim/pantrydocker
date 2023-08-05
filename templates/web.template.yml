@@ -21,13 +21,13 @@ params:
 
   home: /var/www/discourse
   upload_size: 10m
+  nginx_worker_connections: 4000
 
 run:
   - exec: thpoff echo "thpoff is installed!"
   - exec: /usr/local/bin/ruby -e 'if ENV["DISCOURSE_SMTP_ADDRESS"] == "smtp.example.com"; puts "Aborting! Mail is not configured!"; exit 1; end'
   - exec: /usr/local/bin/ruby -e 'if ENV["DISCOURSE_HOSTNAME"] == "discourse.example.com"; puts "Aborting! Domain is not configured!"; exit 1; end'
   - exec: /usr/local/bin/ruby -e 'if (ENV["DISCOURSE_CDN_URL"] || "")[0..1] == "//"; puts "Aborting! CDN must have a protocol specified. Once fixed you should rebake your posts now to correct all posts."; exit 1; end'
-  - exec: chown -R discourse /home/discourse
   # TODO: move to base image (anacron can not be fired up using rc.d)
   - exec: rm -f /etc/cron.d/anacron
   - file:
@@ -136,6 +136,11 @@ run:
       from: /client_max_body_size.+$/
       to: client_max_body_size $upload_size ;
 
+  - replace:
+      filename: "/etc/nginx/nginx.conf"
+      from: /worker_connections.+$/
+      to: worker_connections $nginx_worker_connections ;
+
   - exec:
       cmd: echo "done configuring web"
       hook: web_config
@@ -157,7 +162,12 @@ run:
   - exec:
       cd: $home
       cmd:
-        - su discourse -c 'bundle exec rake plugin:pull_compatible_all'
+        - "[ ! -d 'node_modules' ] || su discourse -c 'yarn install --production && yarn cache clean'"
+
+  - exec:
+      cd: $home
+      cmd:
+        - su discourse -c 'LOAD_PLUGINS=0 bundle exec rake plugin:pull_compatible_all'
       raise_on_fail: false
 
   - exec:
@@ -255,7 +265,7 @@ run:
 
   # move state out of the container this fancy is done to support rapid rebuilds of containers,
   # we store anacron and logrotate state outside the container to ensure its maintained across builds
-  # later move this snipped into an intialization script
+  # later move this snipped into an initialization script
   # we also ensure all the symlinks we need to /shared are in place in the correct structure
   # this allows us to bootstrap on one machine and then run on another
   - file:

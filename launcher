@@ -91,7 +91,7 @@ git_rec_version='1.8.0'
 config_file=containers/"$config".yml
 cidbootstrap=cids/"$config"_bootstrap.cid
 local_discourse=local_discourse
-image="discourse/base:2.0.20210528-1735"
+image="discourse/base:2.0.20220621-0049"
 docker_path=`which docker.io 2> /dev/null || which docker`
 git_path=`which git`
 
@@ -140,6 +140,10 @@ compare_version() {
     return 1
 }
 
+fatal () {
+  echo -e "\n$1\n"
+  exit "${2:-1}"
+}
 
 install_docker() {
   echo "Docker is not installed, you will need to install Docker in order to run Launcher"
@@ -168,7 +172,7 @@ check_prereqs() {
   fi
 
   # 2. running an approved storage driver?
-  if ! $docker_path info 2> /dev/null | egrep -q 'Storage Driver: (aufs|zfs|overlay2)$'; then
+  if ! $docker_path info 2> /dev/null | egrep -q 'Storage Driver: (btrfs|aufs|zfs|overlay2)$'; then
     echo "Your Docker installation is not using a supported storage driver.  If we were to proceed you may have a broken install."
     echo "overlay2 is the recommended storage driver, although zfs and aufs may work as well."
     echo "Other storage drivers are known to be problematic."
@@ -194,10 +198,33 @@ check_prereqs() {
     echo "WARNING: Docker version ${test} deprecated, recommend upgrade to ${docker_rec_version} or newer."
   fi
 
+  arm=false
+  case $(uname -m) in
+    armv7l)
+      echo "ERROR: 32bit arm is not supported. Check if your hardware support arm64, which is supported in experimental capacity."
+      exit 1
+      ;;
+    aarch64 | arm64)
+      echo "WARNING: Support for aarch64 is experimental at the moment. Please report any problems at https://meta.discourse.org/tag/arm "
+      image="discourse/base:aarch64"
+      arm=true
+      read -n 1 -s -r -p "Press any key to continue"
+      ;;
+    x86_64)
+      echo "x86_64 arch detected."
+      ;;
+    *)
+      echo "ERROR: unknown arch detected."
+      exit 1
+      ;;
+  esac
+
+
   # 4. discourse docker image is downloaded
   test=`$docker_path images | awk '{print $1 ":" $2 }' | grep "$image"`
 
-  if [ -z "$test" ]; then
+  # arm experimental support is on a fixed tag, always pull
+  if [ -z "$test" ] || [ $arm = true ]; then
     echo
     echo "WARNING: We are about to start downloading the Discourse base image"
     echo "This process may take anywhere between a few minutes to an hour, depending on your network speed"
@@ -235,8 +262,7 @@ check_prereqs() {
   # 7. enough space for the bootstrap on docker folder
   folder=`$docker_path info --format '{{.DockerRootDir}}'`
   safe_folder=${folder:-/var/lib/docker}
-  test=$(($(stat -f --format="%a*%S" $safe_folder)/1024**3 < 5))
-  if [[ $test -ne 0 ]] ; then
+  if [[ -d $safe_folder && $(stat -f --format="%a*%S" $safe_folder)/1024**3 -lt 5 ]] ; then
     echo "You have less than 5GB of free space on the disk where $safe_folder is located. You will need more space to continue"
     df -h $safe_folder
     echo
@@ -251,6 +277,16 @@ check_prereqs() {
       fi
     fi
     exit 1
+  fi
+
+  # 8. container definition file is accessible and is not insecure (world-readable)
+  if [[ ! -e "$config_file" || ! -r "$config_file" ]]; then
+    echo "ERROR: $config_file does not exist or is not readable."
+    echo
+    echo "Available configs ( `cd containers && ls -dm *.yml | tr -s '\n' ' ' | awk '{ gsub(/\.yml/, ""); print }'`)"
+    exit 1
+  elif [[ "$(find $config_file -perm -004)" ]]; then
+    echo "WARNING: $config_file file is world-readable. You can secure this file by running: chmod o-rwx $config_file"
   fi
 }
 
@@ -460,15 +496,6 @@ fi
   exit 0
 }
 
-if [ ! "$command" == "setup" ]; then
-  if [[ ! -e $config_file ]]; then
-    echo "Config file was not found, ensure $config_file exists"
-    echo
-    echo "Available configs ( `cd containers && ls -dm *.yml | tr -s '\n' ' ' | awk '{ gsub(/\.yml/, ""); print }'`)"
-    exit 1
-  fi
-fi
-
 docker_version=($($docker_path --version))
 docker_version=${test[2]//,/}
 restart_policy=${restart_policy:---restart=always}
@@ -622,10 +649,6 @@ run_run() {
 }
 
 run_bootstrap() {
-  # Is the image available?
-  # If not, pull it here so the user is aware what's happening.
-  $docker_path history $image >/dev/null 2>&1 || pull_image
-
   set_template_info
 
   base_image=`cat $config_file | $docker_path run $user_args --rm -i -a stdin -a stdout $image ruby -e \
@@ -638,56 +661,64 @@ run_bootstrap() {
     image=$base_image
   fi
 
+  # the base_image may not always be discourse/base,
+  # let's ensure we always build from the latest
+  pull_image
+
   set_volumes
   set_links
 
+  if $docker_path run $user_args --rm -i $image gem which pups; then
+    pups_command="/usr/local/bin/pups --stdin"
+  else
+    # Fallback to git pull method here if `pups` was not installed by gem in base image
+    pups_command="cd /pups &&"
+    if [[ ! "false" =  $update_pups ]]; then
+      pups_command="$pups_command git pull && git checkout $pups_version &&"
+    fi
+    pups_command="$pups_command /pups/bin/pups --stdin"
+  fi
+
+  echo $pups_command
+
+  declare -i BOOTSTRAP_EXITCODE
   rm -f $cidbootstrap
 
-  run_command="cd /pups &&"
-  if [[ ! "false" =  $update_pups ]]; then
-    run_command="$run_command git pull && git checkout $pups_version &&"
-  fi
-  run_command="$run_command /pups/bin/pups --stdin"
+  echo "$input" | $docker_path run --shm-size=512m $user_args $links "${env[@]}" -e DOCKER_HOST_IP="$docker_ip" --cidfile "$cidbootstrap" -i -a stdin -a stdout -a stderr $volumes $image \
+    /bin/bash -c "$pups_command"
+  BOOTSTRAP_EXITCODE=$?
 
-  echo $run_command
+  CONTAINER_ID=$(cat "$cidbootstrap")
+  rm -f "$cidbootstrap"
 
-  unset ERR
-
-  tmp_input_file=$(mktemp)
-
-  echo "$input" > "$tmp_input_file"
-  (exec cat "$tmp_input_file" | $docker_path run --shm-size=512m $user_args $links "${env[@]}" -e DOCKER_HOST_IP="$docker_ip" --cidfile $cidbootstrap -i -a stdin -a stdout -a stderr $volumes $image \
-    /bin/bash -c "$run_command") || ERR=$?
-
-  rm -f "$tmp_input_file"
-
-  unset FAILED
   # magic exit code that indicates a retry
-  if [[ "$ERR" == 77 ]]; then
-    $docker_path rm `cat $cidbootstrap`
-    rm $cidbootstrap
+  if [[ $BOOTSTRAP_EXITCODE -eq 77 ]]; then
+    $docker_path rm "$CONTAINER_ID"
     exit 77
-  elif [[ "$ERR" > 0 ]]; then
-    FAILED=TRUE
-  fi
-
-  if [[ $FAILED = "TRUE" ]]; then
-    if [[ ! -z "$DEBUG" ]]; then
-      $docker_path commit `cat $cidbootstrap` $local_discourse/$config-debug || echo 'FAILED TO COMMIT'
-      echo "** DEBUG ** Maintaining image for diagnostics $local_discourse/$config-debug"
-    fi
-
-    $docker_path rm `cat $cidbootstrap`
-    rm $cidbootstrap
+  elif [[ $BOOTSTRAP_EXITCODE -gt 0 ]]; then
+    echo "bootstrap failed with exit code $BOOTSTRAP_EXITCODE"
     echo "** FAILED TO BOOTSTRAP ** please scroll up and look for earlier error messages, there may be more than one."
     echo "./discourse-doctor may help diagnose the problem."
+
+    if [[ -n "$DEBUG" ]]; then
+      if $docker_path commit "$CONTAINER_ID" $local_discourse/$config-debug; then
+        echo "** DEBUG ** Maintaining image for diagnostics $local_discourse/$config-debug"
+      else
+        echo "** DEBUG ** Failed to commit container $CONTAINER_ID for diagnostics"
+      fi
+    fi
+
+    $docker_path rm "$CONTAINER_ID"
     exit 1
   fi
 
   sleep 5
 
-  $docker_path commit `cat $cidbootstrap` $local_discourse/$config || echo 'FAILED TO COMMIT'
-  $docker_path rm `cat $cidbootstrap` && rm $cidbootstrap
+  $docker_path commit \
+    -c "LABEL org.opencontainers.image.created=\"$(TZ=UTC date -Iseconds)\"" \
+    "$CONTAINER_ID" \
+    $local_discourse/$config || fatal "FAILED TO COMMIT $CONTAINER_ID"
+  $docker_path rm "$CONTAINER_ID"
 }
 
 case "$command" in
